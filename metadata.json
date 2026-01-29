@@ -1,0 +1,5 @@
+{
+  "name": "Live Photo Creator",
+  "description": "Convert your images and audio into iOS-compatible Live Photos and MOV videos using Gemini Veo technology.",
+  "requestFramePermissions": []
+}
