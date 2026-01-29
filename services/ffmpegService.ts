@@ -31,9 +31,23 @@ export class FFmpegService {
 
   /**
    * 生成一个符合 Apple 规范的 UUID 字符串
+   * 包含对非安全上下文 (HTTP) 的兼容性处理
    */
   private static generateAssetId(): string {
-    return crypto.randomUUID().toUpperCase();
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID().toUpperCase();
+      }
+    } catch (e) {
+      console.warn('crypto.randomUUID not available, using fallback');
+    }
+
+    // RFC4122 v4 兼容的备用生成器
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    }).toUpperCase();
   }
 
   static async synthesize(
@@ -61,8 +75,7 @@ export class FFmpegService {
 
     const delayMs = Math.round(audioOffset * 1000);
 
-    // 1. 处理图片：通过 FFmpeg 重新封装图片并注入元数据（作为注释或元数据字段）
-    // 虽然 FFmpeg 对 JPG 的 EXIF 写入有限，但在封装层注入 metadata 可提高识别率
+    // 1. 处理图片：注入元数据标识符
     await ffmpeg.exec([
       '-i', 'input_img',
       '-metadata', `comment=${assetId}`,
@@ -71,7 +84,6 @@ export class FFmpegService {
     ]);
 
     // 2. 合成视频并注入关键的 Apple 内容标识符
-    // -metadata com.apple.quicktime.content.identifier 是 iOS 识别实况视频的关键
     await ffmpeg.exec([
       '-framerate', '30',
       '-loop', '1',
