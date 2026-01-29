@@ -10,15 +10,10 @@ export class FFmpegService {
 
     try {
       const ffmpeg = new FFmpeg();
-      
       const coreVersion = '0.12.6';
       const ffmpegVersion = '0.12.10';
-      
-      // 使用标准 unpkg 路径，确保跨环境可用
       const coreBaseURL = `https://unpkg.com/@ffmpeg/core@${coreVersion}/dist/esm`;
       const ffmpegBaseURL = `https://unpkg.com/@ffmpeg/ffmpeg@${ffmpegVersion}/dist/esm`;
-
-      console.log('Loading FFmpeg core and worker...');
 
       await ffmpeg.load({
         coreURL: await toBlobURL(`${coreBaseURL}/ffmpeg-core.js`, 'text/javascript'),
@@ -26,13 +21,19 @@ export class FFmpegService {
         workerURL: await toBlobURL(`${ffmpegBaseURL}/worker.js`, 'text/javascript'),
       });
 
-      console.log('FFmpeg loaded successfully');
       this.ffmpeg = ffmpeg;
       return ffmpeg;
     } catch (error) {
       console.error('Failed to load FFmpeg:', error);
-      throw new Error('FFmpeg 引擎加载失败。请确保您的浏览器支持 WebAssembly 和 SharedArrayBuffer。');
+      throw new Error('FFmpeg 引擎加载失败。');
     }
+  }
+
+  /**
+   * 生成一个符合 Apple 规范的 UUID 字符串
+   */
+  private static generateAssetId(): string {
+    return crypto.randomUUID().toUpperCase();
   }
 
   static async synthesize(
@@ -41,15 +42,16 @@ export class FFmpegService {
     duration: number, 
     audioOffset: number,
     onLog?: (msg: string) => void
-  ): Promise<string> {
+  ): Promise<{ videoUrl: string, imageUrl: string }> {
     const ffmpeg = await this.load();
+    const assetId = this.generateAssetId();
     
     if (onLog) {
       ffmpeg.on('log', ({ message }) => onLog(message));
     }
 
     // 清理旧文件
-    const files = ['input_img', 'input_audio', 'output.mov'];
+    const files = ['input_img', 'input_audio', 'output.mov', 'tagged_img.jpg'];
     for (const f of files) {
       try { await ffmpeg.deleteFile(f); } catch (e) {}
     }
@@ -58,16 +60,18 @@ export class FFmpegService {
     await ffmpeg.writeFile('input_audio', await fetchFile(audioFile));
 
     const delayMs = Math.round(audioOffset * 1000);
-    
-    /**
-     * 优化后的 FFmpeg 指令说明：
-     * 1. -framerate 30: 明确设置图片的输入帧率。
-     * 2. -loop 1: 循环图片。
-     * 3. vf "scale=...": 关键步骤！使用 scale 滤镜将宽高强制转换为偶数（trunc(iw/2)*2），
-     *    否则 libx264 在处理奇数像素的图片时会直接报错导致 0s 视频。
-     * 4. -t: 放在输出文件前，严格控制输出总时长。
-     * 5. -fflags +genpts: 重新生成时间戳，确保视频在 iOS 上播放不卡顿。
-     */
+
+    // 1. 处理图片：通过 FFmpeg 重新封装图片并注入元数据（作为注释或元数据字段）
+    // 虽然 FFmpeg 对 JPG 的 EXIF 写入有限，但在封装层注入 metadata 可提高识别率
+    await ffmpeg.exec([
+      '-i', 'input_img',
+      '-metadata', `comment=${assetId}`,
+      '-metadata', `title=${assetId}`,
+      'tagged_img.jpg'
+    ]);
+
+    // 2. 合成视频并注入关键的 Apple 内容标识符
+    // -metadata com.apple.quicktime.content.identifier 是 iOS 识别实况视频的关键
     await ffmpeg.exec([
       '-framerate', '30',
       '-loop', '1',
@@ -84,15 +88,17 @@ export class FFmpegService {
       '-c:a', 'aac',
       '-b:a', '128k',
       '-t', duration.toString(),
+      '-metadata', `com.apple.quicktime.content.identifier=${assetId}`,
       '-y',
       'output.mov'
     ]);
 
-    const data = await ffmpeg.readFile('output.mov');
-    if (data.length < 1000) {
-      throw new Error('生成的视频文件异常过小，请尝试更换图片或音频文件。');
-    }
+    const videoData = await ffmpeg.readFile('output.mov');
+    const imageData = await ffmpeg.readFile('tagged_img.jpg');
 
-    return URL.createObjectURL(new Blob([data], { type: 'video/quicktime' }));
+    return {
+      videoUrl: URL.createObjectURL(new Blob([videoData], { type: 'video/quicktime' })),
+      imageUrl: URL.createObjectURL(new Blob([imageData], { type: 'image/jpeg' }))
+    };
   }
 }

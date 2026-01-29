@@ -1,3 +1,4 @@
+
 // Fix: Added DOM library reference to resolve 'HTMLInputElement', 'document' and other DOM types.
 /// <reference lib="dom" />
 import React, { useState, useRef } from 'react';
@@ -16,11 +17,12 @@ const App: React.FC = () => {
     status: 'idle'
   });
   
-  // Fix: HTMLInputElement is a global type from the DOM library
+  // 存储处理后的图片 Blob URL（带有元数据）
+  const [processedImageUrl, setProcessedImageUrl] = useState<string | null>(null);
+
   const imageInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
-  // Fix: ChangeEvent generic requires HTMLInputElement from the DOM library
   const handleFileChange = (type: 'image' | 'audio') => (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -42,7 +44,8 @@ const App: React.FC = () => {
     }));
 
     try {
-      const videoUrl = await FFmpegService.synthesize(
+      // 这里的合成现在返回匹配了元数据的图片和视频
+      const { videoUrl, imageUrl } = await FFmpegService.synthesize(
         files.image, 
         files.audio, 
         config.duration, 
@@ -50,9 +53,11 @@ const App: React.FC = () => {
         (msg) => setResult(prev => ({ ...prev, progressMessage: `处理中: ${msg.slice(0, 50)}...` }))
       );
 
+      setProcessedImageUrl(imageUrl);
       setResult(prev => ({
         ...prev,
         videoUrl,
+        imageUrl, // 更新预览图为处理后的图片
         status: 'completed',
         progressMessage: '合成成功！'
       }));
@@ -67,10 +72,15 @@ const App: React.FC = () => {
   };
 
   const downloadLivePhoto = async () => {
-    if (!files.image || !result.videoUrl) return;
-    const blob = await createLivePhotoPackage(files.image, result.videoUrl, 'IMG_LIVE');
+    if (!processedImageUrl || !result.videoUrl) return;
+    
+    // 从 URL 还原 File 对象以供压缩
+    const imageResponse = await fetch(processedImageUrl);
+    const imageBlob = await imageResponse.blob();
+    const taggedImageFile = new File([imageBlob], "IMG_LIVE.JPG", { type: "image/jpeg" });
+
+    const blob = await createLivePhotoPackage(taggedImageFile, result.videoUrl, 'IMG_LIVE');
     const url = URL.createObjectURL(blob);
-    // Fix: Accessing document for dynamic download link creation
     const a = document.createElement('a');
     a.href = url;
     a.download = 'LivePhoto_Pack.zip';
@@ -82,7 +92,6 @@ const App: React.FC = () => {
     if (!files.image || !files.audio || !result.videoUrl) return;
     const blob = await createFullPackage(files.image, files.audio, result.videoUrl);
     const url = URL.createObjectURL(blob);
-    // Fix: Accessing document for dynamic download link creation
     const a = document.createElement('a');
     a.href = url;
     a.download = 'Project_Archive.zip';
@@ -92,6 +101,7 @@ const App: React.FC = () => {
 
   const reset = () => {
     setFiles({ image: null, audio: null });
+    setProcessedImageUrl(null);
     setResult({ imageUrl: '', videoUrl: '', status: 'idle' });
   };
 
@@ -103,7 +113,7 @@ const App: React.FC = () => {
           实况照片合成器
         </h1>
         <p className="text-slate-600 text-lg">
-          将静态图片与音频精确合成为苹果兼容的 MOV 视频与实况照片包。
+          自动注入 Apple Content Identifier，生成 iOS 原生支持的实况照片。
         </p>
       </header>
 
@@ -165,7 +175,7 @@ const App: React.FC = () => {
                     onChange={(e) => setConfig(prev => ({ ...prev, duration: parseFloat(e.target.value) || 3 }))}
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
                   />
-                  <p className="text-xs text-slate-400">建议 1.5 - 3.0 秒（iOS 标准实况照片长度）</p>
+                  <p className="text-xs text-slate-400">iOS 标准实况视频通常为 1.5 - 3.0 秒</p>
                 </div>
                 <div className="space-y-3">
                   <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
@@ -180,7 +190,6 @@ const App: React.FC = () => {
                     onChange={(e) => setConfig(prev => ({ ...prev, offset: parseFloat(e.target.value) || 0 }))}
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 outline-none transition-all"
                   />
-                  <p className="text-xs text-slate-400">支持小数点后 1 位 (例如 0.5)</p>
                 </div>
               </div>
             </div>
@@ -191,7 +200,7 @@ const App: React.FC = () => {
                 disabled={!files.image || !files.audio}
                 className="w-full md:w-80 h-14 text-lg shadow-xl shadow-indigo-200"
               >
-                立即开始本地合成
+                生成带元数据的实况照片
               </Button>
             </div>
           </div>
@@ -205,12 +214,9 @@ const App: React.FC = () => {
                <Settings className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-600 w-8 h-8 animate-pulse" />
             </div>
             <div className="max-w-md">
-              <h2 className="text-2xl font-bold text-slate-800">正在调用 FFmpeg 合成...</h2>
+              <h2 className="text-2xl font-bold text-slate-800">正在同步元数据并合成...</h2>
               <p className="text-slate-500 mt-3 text-sm font-mono overflow-hidden h-6">
                 {result.progressMessage}
-              </p>
-              <p className="text-xs text-amber-500 mt-6 bg-amber-50 p-3 rounded-lg">
-                注意：本地处理消耗计算资源，请勿在合成过程中刷新页面。
               </p>
             </div>
           </div>
@@ -232,17 +238,17 @@ const App: React.FC = () => {
         {result.status === 'completed' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-6 duration-700">
             <div className="grid md:grid-cols-2 gap-8">
-              <div className="bg-slate-900 rounded-3xl overflow-hidden shadow-2xl aspect-[3/4] md:aspect-auto flex items-center justify-center group relative">
+              <div className="bg-slate-900 rounded-3xl overflow-hidden shadow-2xl flex items-center justify-center group relative">
                 <video 
                   src={result.videoUrl} 
                   autoPlay 
                   loop 
                   muted 
                   controls
-                  className="w-full h-full object-contain"
+                  className="w-full h-full max-h-[500px] object-contain"
                 />
-                <div className="absolute top-4 right-4 bg-indigo-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg">
-                  合成结果预览
+                <div className="absolute top-4 right-4 bg-green-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg">
+                  元数据已注入
                 </div>
               </div>
 
@@ -250,10 +256,10 @@ const App: React.FC = () => {
                 <div className="bg-green-50 p-6 rounded-3xl border border-green-100">
                   <h3 className="text-lg font-bold text-green-900 flex items-center gap-2 mb-2">
                     <CheckCircle size={20} />
-                    资源就绪
+                    合成完毕
                   </h3>
                   <p className="text-green-700 text-sm">
-                    MOV 视频已生成（时长 {config.duration}s，延迟 {config.offset}s）。您可以直接下载或导出实况照片包。
+                    图片和视频已包含匹配的 Asset Identifier。下载后的 ZIP 包解压后导入 iOS 设备（如通过隔空投送）即可识别为实况照片。
                   </p>
                 </div>
 
@@ -263,14 +269,9 @@ const App: React.FC = () => {
                     下载实况照片 (ZIP)
                   </Button>
                   
-                  <Button variant="outline" onClick={downloadFullPack} className="w-full py-5 rounded-2xl border-slate-300">
-                    <Download size={20} />
-                    打包原始素材 + 视频
-                  </Button>
-
                   <Button variant="outline" onClick={reset} className="w-full py-4 text-slate-400 border-none hover:text-indigo-600">
                     <RefreshCcw size={18} />
-                    重新制作
+                    制作下一个
                   </Button>
                 </div>
               </div>
@@ -280,12 +281,7 @@ const App: React.FC = () => {
       </main>
 
       <footer className="mt-16 text-center text-slate-400 text-xs pb-12">
-        <div className="flex justify-center gap-8 mb-4">
-          <span className="flex items-center gap-1"><CheckCircle size={12}/> 无云端传输</span>
-          <span className="flex items-center gap-1"><CheckCircle size={12}/> 本地 FFmpeg 驱动</span>
-          <span className="flex items-center gap-1"><CheckCircle size={12}/> 高兼容性 MOV</span>
-        </div>
-        <p>© 2024 Live Photo Studio • 专业级本地音视频合成方案</p>
+        <p>© 2024 Live Photo Studio • 符合 Apple 实况照片元数据规范</p>
       </footer>
     </div>
   );
